@@ -21,6 +21,7 @@ def work():
     with ctx.Pool(4) as pool:
         for _ in pool.imap_unordered(functools.partial(process, lock=lock, shared=shared), range(40)):
             pass
+        print(f"MP_LOOP_DONE items={len(shared)}", flush=True)  # all work is done; the with-block exit is next
     print(f"MP_DONE method=fork items={len(shared)} manager_pid={manager._process.pid}", flush=True)
     return len(shared)
 

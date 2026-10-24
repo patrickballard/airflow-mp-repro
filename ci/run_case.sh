@@ -20,8 +20,8 @@ snapshot() {  # $1: label
     [ -d "/proc/$p" ] || continue
     {
       echo "== pid $p: $(tr '\0' ' ' < /proc/$p/cmdline | cut -c1-200)"
-      grep -E '^(State|PPid|Threads):' /proc/$p/status
-      ls -l /proc/$p/fd 2>&1
+      sudo grep -E '^(State|PPid|Threads|SigCgt|SigIgn):' /proc/$p/status
+      sudo ls -l /proc/$p/fd 2>&1  # the supervisor is non-dumpable: root only
     } >> "$d/proc_fd.txt"
     sudo "$PYSPY" dump --pid "$p" > "$d/pyspy_$p.txt" 2>&1 || true
   done
@@ -35,7 +35,7 @@ start=$(date +%s); done_at=""; snap=""; killed=""
 while :; do
   t=$(( $(date +%s) - start )); s=$(state)
   log=$(find "$AIRFLOW_HOME/logs" -path "*dag_id=$dag/*run_id=$run*" -name '*.log' 2>/dev/null | head -1)
-  if [ -z "$done_at" ] && [ -n "$log" ] && grep -q MP_DONE "$log"; then done_at=$t; fi
+  if [ -z "$done_at" ] && [ -n "$log" ] && grep -qE "MP_LOOP_DONE|MP_DONE" "$log"; then done_at=$t; fi
   echo "t=${t}s state=${s:-none} work_done_at=${done_at:--}" >> "$out/timeline.txt"
   case "$s" in success|failed|upstream_failed|skipped|up_for_retry) break ;; esac
   if [ -n "$done_at" ] && [ -z "$snap" ] && [ $((t - done_at)) -ge 15 ]; then

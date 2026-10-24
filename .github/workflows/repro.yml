@@ -48,36 +48,44 @@ jobs:
           nohup airflow standalone > standalone.log 2>&1 &
           for i in $(seq 1 120); do curl -sf localhost:8080/api/v2/monitor/health > /dev/null && break; sleep 2; done
           curl -s localhost:8080/api/v2/monitor/health; echo
-          for i in $(seq 1 60); do n=$(airflow dags list -o plain 2>/dev/null | grep -cE '^(mp_|ctl_|fix_)'); [ "$n" -ge 6 ] && break; sleep 3; done
+          for i in $(seq 1 60); do n=$(airflow dags list -o plain 2>/dev/null | grep -cE '^(mp_|ctl_|fix_)'); [ "$n" -ge 9 ] && break; sleep 3; done
           airflow dags list -o plain | grep -E '^(mp_|ctl_|fix_)'
-      - name: "Case: fork, as in the question (untouched)"
+      - name: "Case: fork, as in the question"
         timeout-minutes: 5
         continue-on-error: true
-        run: CASE=1_fork_untouched ci/run_case.sh mp_fork
-      - name: "Case: fork again, then kill the Manager server (causality)"
-        timeout-minutes: 5
-        continue-on-error: true
-        run: CASE=2_fork_kill_manager ci/run_case.sh mp_fork --kill-manager
+        run: CASE=1_fork ci/run_case.sh mp_fork
       - name: "Case: spawn, as in the question"
         timeout-minutes: 5
         continue-on-error: true
-        run: CASE=3_spawn ci/run_case.sh mp_spawn
+        run: CASE=2_spawn ci/run_case.sh mp_spawn
       - name: "Control: fork, Pool only, no Manager"
         timeout-minutes: 5
         continue-on-error: true
-        run: CASE=4_ctl_fork_no_manager ci/run_case.sh ctl_fork_no_manager
+        run: CASE=3_ctl_fork_no_manager ci/run_case.sh ctl_fork_no_manager
       - name: "Control: fork, Manager shut down before returning"
         timeout-minutes: 5
         continue-on-error: true
-        run: CASE=5_ctl_fork_manager_shutdown ci/run_case.sh ctl_fork_manager_shutdown
+        run: CASE=4_ctl_fork_manager_shutdown ci/run_case.sh ctl_fork_manager_shutdown
+      - name: "Causality: fork, SIGTERM reset to default in Pool workers"
+        timeout-minutes: 5
+        continue-on-error: true
+        run: CASE=5_ctl_fork_sigterm_default ci/run_case.sh ctl_fork_sigterm_default
+      - name: "Causality: fork, pool.close() + join() before the with-block exits"
+        timeout-minutes: 5
+        continue-on-error: true
+        run: CASE=6_ctl_fork_close_join ci/run_case.sh ctl_fork_close_join
       - name: "Fix (a): subprocess.run of the script"
         timeout-minutes: 5
         continue-on-error: true
-        run: CASE=6_fix_subprocess ci/run_case.sh fix_subprocess
+        run: CASE=7_fix_subprocess ci/run_case.sh fix_subprocess
       - name: "Fix (b): spawn, importable worker, no Manager"
         timeout-minutes: 5
         continue-on-error: true
-        run: CASE=7_fix_spawn_importable ci/run_case.sh fix_spawn_importable
+        run: CASE=8_fix_spawn_importable ci/run_case.sh fix_spawn_importable
+      - name: "Fix (b2): spawn, importable worker, no Manager, no __main__ re-run"
+        timeout-minutes: 5
+        continue-on-error: true
+        run: CASE=9_fix_spawn_hide_main ci/run_case.sh fix_spawn_hide_main
       - name: Summary
         if: always()
         run: |

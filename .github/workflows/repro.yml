@@ -1,0 +1,93 @@
+name: mp-repro
+on: workflow_dispatch
+
+permissions:
+  contents: read
+
+jobs:
+  repro:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30      # a hanging case can't burn more than this
+    services:
+      postgres:
+        image: postgres:16
+        env: {POSTGRES_USER: airflow, POSTGRES_PASSWORD: airflow, POSTGRES_DB: airflow}
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U airflow" --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      AIRFLOW_HOME: ${{ github.workspace }}/home
+      AIRFLOW__CORE__DAGS_FOLDER: ${{ github.workspace }}/dags
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@localhost:5432/airflow
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "True"
+      AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: "5"
+      AIRFLOW__DAG_PROCESSOR__MIN_FILE_PROCESS_INTERVAL: "5"
+      PYTHONPATH: ${{ github.workspace }}/include     # makes include/mp_worker.py importable (fix b)
+      PG_URL: postgresql://airflow:airflow@localhost:5432/airflow
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - uses: astral-sh/setup-uv@v6
+      - name: Install Airflow 3.3.2 (official constraints) and py-spy
+        run: |
+          uv venv .venv --python python3.12
+          uv pip install --python .venv/bin/python "apache-airflow[postgres]==3.3.2" \
+            -c https://raw.githubusercontent.com/apache/airflow/constraints-3.3.2/constraints-3.12.txt
+          uv pip install --python .venv/bin/python py-spy
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          echo "PYSPY=$PWD/.venv/bin/py-spy" >> "$GITHUB_ENV"
+      - name: Start Airflow (airflow standalone - scheduler + LocalExecutor, dag-processor, api-server, triggerer)
+        timeout-minutes: 6
+        run: |
+          mkdir -p diag
+          { airflow version; python -c "import multiprocessing as m, sys; print(sys.version); print('default start method:', m.get_start_method())"
+            airflow config get-value workers socket_cleanup_timeout; airflow config get-value core task_success_overtime; } | tee diag/versions.txt
+          nohup airflow standalone > standalone.log 2>&1 &
+          for i in $(seq 1 120); do curl -sf localhost:8080/api/v2/monitor/health > /dev/null && break; sleep 2; done
+          curl -s localhost:8080/api/v2/monitor/health; echo
+          for i in $(seq 1 60); do n=$(airflow dags list -o plain 2>/dev/null | grep -cE '^(mp_|ctl_|fix_)'); [ "$n" -ge 6 ] && break; sleep 3; done
+          airflow dags list -o plain | grep -E '^(mp_|ctl_|fix_)'
+      - name: "Case: fork, as in the question (untouched)"
+        timeout-minutes: 5
+        continue-on-error: true
+        run: CASE=1_fork_untouched ci/run_case.sh mp_fork
+      - name: "Case: fork again, then kill the Manager server (causality)"
+        timeout-minutes: 5
+        continue-on-error: true
+        run: CASE=2_fork_kill_manager ci/run_case.sh mp_fork --kill-manager
+      - name: "Case: spawn, as in the question"
+        timeout-minutes: 5
+        continue-on-error: true
+        run: CASE=3_spawn ci/run_case.sh mp_spawn
+      - name: "Control: fork, Pool only, no Manager"
+        timeout-minutes: 5
+        continue-on-error: true
+        run: CASE=4_ctl_fork_no_manager ci/run_case.sh ctl_fork_no_manager
+      - name: "Control: fork, Manager shut down before returning"
+        timeout-minutes: 5
+        continue-on-error: true
+        run: CASE=5_ctl_fork_manager_shutdown ci/run_case.sh ctl_fork_manager_shutdown
+      - name: "Fix (a): subprocess.run of the script"
+        timeout-minutes: 5
+        continue-on-error: true
+        run: CASE=6_fix_subprocess ci/run_case.sh fix_subprocess
+      - name: "Fix (b): spawn, importable worker, no Manager"
+        timeout-minutes: 5
+        continue-on-error: true
+        run: CASE=7_fix_spawn_importable ci/run_case.sh fix_spawn_importable
+      - name: Summary
+        if: always()
+        run: |
+          for f in diag/*/timeline.txt; do echo "== ${f%/timeline.txt}"; tail -1 "$f"; done | tee diag/summary.txt
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics
+          path: |
+            diag/
+            home/logs/
+            standalone.log

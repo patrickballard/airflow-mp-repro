@@ -116,3 +116,28 @@ finally:
 - **Versions:** `_on_term` and `block_orm_access` are what 3.3.2 ships. Other 3.x versions weren't checked.
 - **A cap:** with `execution_timeout` set, the hang ends in a timeout failure instead of running forever.
 - **Harness:** `MP_LOOP_DONE` was meant to be logged after the loop in `mp_fork.py`, but that edit didn't apply before these runs. It's added now. The evidence that the work completed is the py-spy stack in `Pool.__exit__`.
+
+## The fixes, tested end to end
+
+Run [40049049775](https://github.com/patrickballard/airflow-mp-repro/actions/runs/40049049775) (`suite=fixes`) repeats the earlier run [40048118863](https://github.com/patrickballard/airflow-mp-repro/actions/runs/40048118863) with a stronger stray check; both gave the same results.
+
+**What "fully fixed" means:**
+- the task reaches `success`;
+- **5 s and 75 s after success**, no process is left that carries the task's id in its title, or that is a `multiprocessing` / `parse_xml.py` / `mp_job.py` child;
+- the supervisor logs no "Process exited with open sockets" warning. That warning means a leftover process held its pipes until the 60 s `socket_cleanup_timeout`.
+
+**Positive control:** a task that forks a child and leaves it sleeping. The check sees it at both times (2 processes at +5 s, the stray plus the supervisor; 1 at +75 s, the stray orphaned to PID 1). The supervisor logs `Process exited with open sockets; cleaning up after timeout`, with `socket_types=['stdout', 'stderr', 'logs', 'requests']`.
+
+| Fix | Code | Result | Leftover processes (+5 s / +75 s) | Socket-cleanup warnings |
+|---|---|---|---|---|
+| 1. `Pool(initializer=...)` resets SIGTERM to `SIG_DFL` (Manager left running, as in the question) | `dags/ctl_fork_sigterm_default.py` | success, 8 s | 0 / 0 | 0 |
+| 1, with `with ctx.Manager() as manager:` | `dags/fix1_initializer_manager_ctx.py` | success, 4 s | 0 / 0 | 0 |
+| 2. `pool.close(); pool.join()` instead of the `with` block (Manager left running) | `dags/fix2_close_join.py` | success, 2 s | 0 / 0 | 0 |
+| 2, with `with ctx.Manager() as manager:` | `dags/fix2_close_join_manager_ctx.py` | success, 3 s | 0 / 0 | 0 |
+| 3. spawn parser via `subprocess.run([sys.executable, "parse_xml.py", "40"])` | `dags/fix3_spawn_subprocess.py`, `scripts/parse_xml.py` | success, 4 s | 0 / 0 | 0 |
+| (a) fork + Manager script via `subprocess.run` | `dags/fix_subprocess.py`, `scripts/mp_job.py` | success, 4 s | 0 / 0 | 0 |
+| Positive control: a forked child left sleeping | `dags/ctl_stray_positive.py` | success, 4 s | **2 / 1** | **1** |
+
+**All six fix it fully.** A Manager left running (fixes 1 and 2 as in the question) doesn't leave a stray. When `work()` returns, its `manager` object is garbage-collected, and multiprocessing's `Finalize` callback shuts the server process down. Still, `with ctx.Manager() as manager:` makes that explicit and doesn't depend on garbage collection.
+
+**Spawn:** only fix 3 is tested here, a separate script. The in-task spawn variant (fix b2, which hides `__main__.__file__`) also works, but it's a hack.

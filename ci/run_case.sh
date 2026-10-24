@@ -59,7 +59,9 @@ if [ "$final" = success ] && [ -n "${STRAY_CHECK:-}" ]; then
   ti=$(sql "select id from task_instance where dag_id='$dag' and run_id='$run' and task_id='work'")
   for at in 5 75; do
     sleep $(( at - ${prev:-0} )); prev=$at
-    ps -eo pid,ppid,pgid,stat,etimes,args | grep -F "$ti" | grep -v grep > "$out/strays_${at}s.txt"
+    # forked children carry the task's title; subprocess.run children and spawn workers don't, so match those too
+    ps -eo pid,ppid,pgid,stat,etimes,args | grep -E -- "$ti|multiprocessing|parse_xml.py|mp_job.py" | grep -v grep \
+      > "$out/strays_${at}s.txt"
     n=$(grep -vc ' Z ' "$out/strays_${at}s.txt"); strays="$strays +${at}s:$n"
     echo "+${at}s after success: $n live process(es) still carry the task's id" >> "$out/timeline.txt"
   done

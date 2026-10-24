@@ -2,7 +2,7 @@
 
 **Short version:** the fork hang isn't your code, and it isn't the Manager. In Airflow 3, `Pool.terminate()` can't stop workers forked from inside a task, so the `with Pool(...)` block never exits. With spawn, every child re-runs the `airflow` CLI, and that crashes inside a task process. Close and join the pool yourself (or reset SIGTERM in the workers), or run the multiprocessing code as its own script.
 
-I reproduced both on Airflow 3.3.2: LocalExecutor, a real scheduler (`airflow standalone`), Python 3.12 on Linux. Evidence and runnable repro: [airflow-mp-repro](LINK) (process trees, `/proc/<pid>/status`, py-spy dumps).
+I reproduced both on Airflow 3.3.2: LocalExecutor, a real scheduler (`airflow standalone`), Python 3.12 on Linux. Runnable repro: [airflow-mp-repro](https://github.com/patrickballard/airflow-mp-repro). [FINDINGS.md](https://github.com/patrickballard/airflow-mp-repro/blob/main/FINDINGS.md) has the evidence: process trees, `/proc/<pid>/status` and py-spy stacks.
 
 ### Why fork "finishes the work but stays running"
 

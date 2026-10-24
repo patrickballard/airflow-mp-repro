@@ -29,6 +29,7 @@ snapshot() {  # $1: label
   echo "$pids" > "$d/task_pids.txt"; echo "$parents" > "$d/parent_pids.txt"
 }
 
+w0=$(grep -ci "open sockets" standalone.log 2>/dev/null || true)
 airflow dags unpause "$dag" > /dev/null
 airflow dags trigger "$dag" -r "$run" > /dev/null
 start=$(date +%s); done_at=""; snap=""; killed=""
@@ -51,6 +52,21 @@ while :; do
   sleep 2
 done
 [ -z "$snap" ] && snapshot end
-echo "final state=$(state) after $(( $(date +%s) - start ))s; work_done_at=${done_at:--}; manager_killed_at=${killed:--}" | tee -a "$out/timeline.txt"
+final=$(state); took=$(( $(date +%s) - start )); strays=""
+if [ "$final" = success ] && [ -n "${STRAY_CHECK:-}" ]; then
+  # Every process the task forked keeps the title "airflow worker -- <ti id>"; the supervisor's title
+  # also names the ti id while it is still servicing the task. Anything left after success is a stray.
+  ti=$(sql "select id from task_instance where dag_id='$dag' and run_id='$run' and task_id='work'")
+  for at in 5 75; do
+    sleep $(( at - ${prev:-0} )); prev=$at
+    ps -eo pid,ppid,pgid,stat,etimes,args | grep -F "$ti" | grep -v grep > "$out/strays_${at}s.txt"
+    n=$(grep -vc ' Z ' "$out/strays_${at}s.txt"); strays="$strays +${at}s:$n"
+    echo "+${at}s after success: $n live process(es) still carry the task's id" >> "$out/timeline.txt"
+  done
+  # the supervisor force-closes sockets a stray kept open (logs "Process exited with open sockets")
+  grep -i "open sockets" standalone.log | tail -n +$(( ${w0:-0} + 1 )) > "$out/socket_cleanup_warnings.txt"
+  strays="$strays socket_cleanup_warnings:$(wc -l < "$out/socket_cleanup_warnings.txt" | tr -d ' ')"
+fi
+echo "final state=$final after ${took}s; work_done_at=${done_at:--}; strays=[${strays# }]" | tee -a "$out/timeline.txt"
 [ -n "$log" ] && cp "$log" "$out/task.log"
 exit 0
